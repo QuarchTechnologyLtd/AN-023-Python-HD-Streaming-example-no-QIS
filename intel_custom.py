@@ -6,6 +6,7 @@ from timeit import default_timer as timer
 import socket
 import logging
 import os, time
+import subprocess
 from quarchpy.device import *
 
 
@@ -68,7 +69,7 @@ class HdStreamer:
     def __get_next_decode_state(self, current_state):
         return self.__stream_decode[self.__stream_header_channels][current_state]
 
-    def start_stream (self, seconds, csv_file_path):                  
+    def start_stream (self, seconds, csv_file_path, fio_command=None):
         
         # Work out how many bytes will be in a stripe, based on channel enables
         bytes_per_stripe = 0
@@ -130,7 +131,12 @@ class HdStreamer:
         # Tell the PPM we are stream capable, to unlock the stream function
         self.__my_device.sendCommand ("conf stream enable on")
         # Start stream
-        self.__my_device.sendCommand ("rec stream")      
+        self.__my_device.sendCommand ("rec stream")
+
+        if (fio_command is not None):
+            print("Starting FIO workload")
+            fio_formatted_cmd = fio_command.split(" ")
+            myproc = subprocess.Popen(fio_formatted_cmd)
 
         # Loop to get all data in the stream, not returning until done
         stream_start = timer()
@@ -150,17 +156,41 @@ class HdStreamer:
             self.__stream_socket.recv_into(memoryview(data), len_bytes)
             # Force an TCP ACK by sending a stub packet, used to speed up the data flow
             self.__stream_socket.send(bytearray(b'\x02\x00\xff\xff'))
+
+            # If header is not valid, assume this is the stream header and process it (one time operation at start)
+            if (self.__header_valid == False):          
+                self.__process_stream_header (data)
+                self.__header_valid = True
+                len_bytes -= self.__header_size
+
+                # If we're done after the header bytes, continue and skip processing
+                if (len_bytes == 0):
+                    continue
             
-            # Process the data packet, which could contain a veriety of things at this point
-            # Pass in a snipped memoryview of the data packet for processing
-            self.__process_packet (memoryview(data)[0:len_bytes])
+            # Odd byte count means a status byte at the end which must be processed
+            if ((len_bytes & 1) != 0):
+                self.__handle_status_byte (data[len_bytes-1])
+                len_bytes -= 1
+
+            if (len_bytes > 0):
+                # Store data into the stream mega buffer, at the end of current data (no processing during the stream, to avoid any performance hit)
+                self.__mega_buffer[self.__data_store_pos:self.__data_store_pos + len_bytes] = data[0:len_bytes]
+                self.__data_store_pos += len_bytes
+
+            # Perform ACK sequence as required by the current status
+            if (self.__sync_packet_active):
+                self.__send_sync()
+                self.__sync_packet_active = False                        
             
             # End after set time
             if (timer() - stream_start > seconds):
-                self.__request_stop = True
-                
-        # Create the dataframe for the processed output data
-        #self.processed_data = pandas.DataFrame(columns=["Time us","5V voltage mV","5V current uA","12V voltage mV","12V current uA","5V power uW","12V power uW", "Total Power uW"])
+                self.__request_stop = True                      
+
+        if (fio_command is not None):
+            # If this while loop is entered, the stream time is too short for the FIO job.
+            while myproc.poll() is None:
+                print("Waiting for FIO to finish..")
+                time.sleep(1)
 
         print ("Processing data to CSV")
         # Stream has now fully completed, write the data to csv, as required
@@ -225,7 +255,7 @@ class HdStreamer:
     # Processing for stream data
     def __process_stream_data (self, data):       
         data_len = len(data)
-
+  
         # Odd byte count means a status byte at the end
         if ((data_len & 1) != 0):
             self.__handle_status_byte (data[data_len-1])
@@ -308,8 +338,8 @@ class HdStreamer:
         buffer_len = len(buffer)
         str_cols = ["","","","","","","",""]
         value_cols = [0,0,0,0,0,0,0,0]        
-        fpVal = 0
-        start_time = timer()
+
+
         # Note: Fixed HD 4uS per stripe base measurement rate
         ave_multiplier = (pow(self.__stream_average_rate,2) * 4)        
 
@@ -318,7 +348,7 @@ class HdStreamer:
             if (self.__stream_decode_state == 0):
                 # scale 5V V and write to file
                 intVal = self.__stream_buffer_to_word( buffer[i:i+2] )        
-                value_cols[1] = intVal / 1000.0
+                value_cols[1] = intVal
                 toBuffer = True                
                 i = i + 2
 
@@ -327,7 +357,7 @@ class HdStreamer:
                 if self.__flag_word_low:
                     self.__flag_word_low = False
                     intVal = self.__stream_buffer_to_word( buffer[i:i+2] )
-                    value_cols[2] = ( (self.__val_word_high * 4096) + (intVal & 0x3fff) ) / 1000.0
+                    value_cols[2] = ( (self.__val_word_high * 4096) + (intVal & 0x3fff) )
                     toBuffer = True                    
                 else:
                     self.__flag_word_low = True
@@ -337,7 +367,7 @@ class HdStreamer:
             if (self.__stream_decode_state == 2):
                 # scale 12V V and write to file
                 intVal = self.__stream_buffer_to_word( buffer[i:i+2] )
-                value_cols[3] = intVal / 1000.0                
+                value_cols[3] = intVal
                 toBuffer = True
                 i = i + 2
 
@@ -346,7 +376,7 @@ class HdStreamer:
                 if self.__flag_word_low:
                     self.__flag_word_low = False
                     intVal = self.__stream_buffer_to_word( buffer[i:i+2] )
-                    value_cols[4] = ( (self.__val_word_high * 4096) + (intVal & 0x3fff) ) / 1000.0
+                    value_cols[4] = ( (self.__val_word_high * 4096) + (intVal & 0x3fff) )
                     toBuffer = True
                 else:
                     self.__flag_word_low = True

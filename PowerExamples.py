@@ -66,7 +66,7 @@ def main():
     setupPowerOutput (myPpmDevice)
 
     # (OPTIONAL) Wait for device to power up and become ready (you can also start your workloads here if needed)
-    # time.sleep(5)
+    time.sleep(1)
 
     ######################################################
     # Now we set up the PPM streaming parameters
