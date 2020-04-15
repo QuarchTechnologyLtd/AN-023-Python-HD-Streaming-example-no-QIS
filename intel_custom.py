@@ -40,7 +40,7 @@ class HdStreamer:
         # Socket is buried in a rather ugly way...
         self.__stream_socket = self.__my_device.connectionObj.connection.Connection
         # Data storage for processed output data
-        self.processed_data = None
+        self.processed_data = None        
 
         # State machine setup for the streaming decode.  Provides the state transitions needed for any given channel selection
         # Channel selection is commented in the right. -1 means disabled channel.
@@ -132,11 +132,15 @@ class HdStreamer:
         self.__my_device.sendCommand ("conf stream enable on")
         # Start stream
         self.__my_device.sendCommand ("rec stream")
+        
+        logging.debug(datetime.now().isoformat() + "\t: Stream Started")
 
         if (fio_command is not None):
             print("Starting FIO workload")
             fio_formatted_cmd = fio_command.split(" ")
             myproc = subprocess.Popen(fio_formatted_cmd)
+            
+        logging.debug(datetime.now().isoformat() + "\t: FIO workload Started")
 
         # Loop to get all data in the stream, not returning until done
         stream_start = timer()
@@ -184,15 +188,20 @@ class HdStreamer:
             
             # End after set time
             if (timer() - stream_start > seconds):
-                self.__request_stop = True                      
+                if (self.__request_stop == False):
+                    logging.debug(datetime.now().isoformat() + "\t: Stream time complete, halting")
+                self.__request_stop = True        
+                
 
         if (fio_command is not None):
             # If this while loop is entered, the stream time is too short for the FIO job.
             while myproc.poll() is None:
                 print("Waiting for FIO to finish..")
+                logging.debug(datetime.now().isoformat() + "\t: Waiting for FIO to finish...")
                 time.sleep(1)
 
         print ("Processing data to CSV")
+        logging.debug(datetime.now().isoformat() + "\t: Started CSV processing")
         # Stream has now fully completed, write the data to csv, as required
         self.__file_stream = open (csv_file_path, 'w')
         # write capture data        
@@ -219,6 +228,7 @@ class HdStreamer:
         # Process the buffered data
         self.__decode_stream_data_buffer (memoryview(self.__mega_buffer))
         self.__file_stream.close()
+        logging.debug(datetime.now().isoformat() + "\t: Completed CSV processing, exiting")
         print ("CSV created, process complete!")
             
 

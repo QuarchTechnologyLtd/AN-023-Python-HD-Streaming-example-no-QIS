@@ -35,6 +35,9 @@ Main function, containing the example code to execute
 '''
 def main():
 
+    # Enable logging
+    logging.basicConfig (filename="app.log", filemode='w', level=logging.DEBUG)
+
     # Required min version for this application note
     quarchpy.requiredQuarchpyVersion ("2.0.11")
         
