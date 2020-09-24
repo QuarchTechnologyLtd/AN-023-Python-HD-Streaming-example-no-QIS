@@ -463,7 +463,9 @@ class HdStreamer:
 
 
         # Note: Fixed HD 4uS per stripe base measurement rate
-        ave_multiplier = (pow(self.__stream_average_rate,2) * 4)        
+        ave_multiplier = (pow(self.__stream_average_rate,2) * 4)   
+        if (ave_multiplier == 0):
+            ave_multiplier = 4
 
         while (i < buffer_len):
             toBuffer = False
