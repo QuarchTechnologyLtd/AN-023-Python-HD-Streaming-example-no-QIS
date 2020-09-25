@@ -310,7 +310,9 @@ class HdStreamer:
     def __handle_status_byte(self, status_byte):
         # Termination request on 0-2
         if (status_byte >= 0 and status_byte < 3):
-            self.__stream_end_status = status_byte           
+            self.__stream_end_status = status_byte         
+            if (status_byte == 1):
+                print ("BUFFER OVERRUN - Stream stopped early")
             logging.debug(datetime.now().isoformat() + "\t: Stream download from PPM complete: " + str(status_byte))
         # No data yet on 3
         elif (status_byte == 3):

@@ -81,7 +81,7 @@ def main():
     if (msg != "OK"):
         print ("Failed to set trigger mode: " + msg)
     # Set the averaging rate to the module to 16 (64uS) as the closest to 100uS
-    msg = myPpmDevice.sendCommand ("record:averaging 16")   
+    msg = myPpmDevice.sendCommand ("record:averaging 4")   
     if (msg != "OK"):
         print ("Failed to set hardware averaging: " + msg)
     else:
@@ -101,7 +101,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (60, outputPath, save_mode="real_time")    
+    MyStream.start_stream (60*15, outputPath) #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")
