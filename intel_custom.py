@@ -1,15 +1,10 @@
 #!/usr/bin/env python
-import binascii
-import _struct
+import logging
+import subprocess
+import threading
+import time
 from datetime import datetime
 from timeit import default_timer as timer
-import socket
-import logging
-import os, time
-import subprocess
-from io import StringIO
-from quarchpy.device import *
-import threading
 
 
 class HdStreamer:

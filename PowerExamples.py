@@ -18,14 +18,15 @@ We will record at a high rate and post process down to a lower rate, ending with
 '''
 
 
-import os, time
-
-import quarchpy
-from quarchpy.device import *
 # Timing to check how long it takes to end the stream
 import logging
-from intel_custom import HdStreamer
+import os
+import time
+
 import pandas as pd
+import quarchpy
+from intel_custom import HdStreamer
+from quarchpy.device import *
 
 # Path where stream will be saved to (defaults to current script path)
 streamPath = os.path.dirname(os.path.realpath(__file__))
@@ -57,7 +58,7 @@ def main():
     # Here we connect to the PPM and power up the outputs
     ######################################################
    
-    myQuarchDevice = quarchDevice (myDeviceID)
+    myQuarchDevice = getQuarchDevice(myDeviceID)
     # Convert the base device to a power device class
     myPpmDevice = quarchPPM (myQuarchDevice)
 
