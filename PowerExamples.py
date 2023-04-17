@@ -38,6 +38,7 @@ def main():
 
     # Enable logging
     logging.basicConfig (filename="app.log", filemode='w', level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
 
     # Required min version for this application note
     quarchpy.requiredQuarchpyVersion ("2.0.11")
@@ -51,7 +52,7 @@ def main():
     #Scan for quarch TCP devices on the system
     deviceList = scanDevices ('TCP')
     myDeviceID = userSelectDevice (deviceList, additionalOptions=["quit"], nice=True)
-    if myDeviceID is "quit":
+    if myDeviceID == "quit":
         return 0    
 
     ######################################################
@@ -102,7 +103,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (60*15, outputPath) #save_mode="real_time"
+    MyStream.start_stream (60*1, outputPath, logger) #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")
