@@ -52,6 +52,12 @@ class HdStreamer:
         self.__value_12p = 0
         self.__value_5p = 0
         self.__value_totp = 0
+        self.__isHdPlus = False
+        self.__LastValid = False
+        self.__Last5V_V = 0
+        self.__Last5V_I = 0
+        self.__Last12V_V = 0
+        self.__Last12V_I = 0
 
         # State machine setup for the streaming decode.  Provides the state transitions needed for any given channel selection
         # Channel selection is commented in the right. -1 means disabled channel.
@@ -76,6 +82,12 @@ class HdStreamer:
         if ("1944" not in self.__my_device.sendCommand("*serial?")):
             raise ValueError(
                 "Attached device not supported.  This code only supports HD power modules (QTL1999 / QTL1995)")
+                
+        # Check if this is an HD plus module, which means PAM style block/packet based encoding
+        if ("HD PLUS" in self.__my_device.sendCommand("hello?").upper()):
+            self.__isHdPlus = True
+            # Mark header size as undefined at setup time (size is dynamic)
+            self.__header_size = -1
 
     # Gets the next state for the decode state machine
     def __get_next_decode_state(self, current_state):
@@ -169,7 +181,7 @@ class HdStreamer:
 
     def _post_processing(self, csv_file_path, logger):
         csv_start_time = time.time()
-        print ("Post-processing data to CSV")
+        print("Post-processing data to CSV")
         logger.info(datetime.now().isoformat() + "\t: Started CSV post-processing")
         # Stream has now fully completed, write the data to csv, as required
         self.__prepare_csv_file(csv_file_path)
@@ -196,7 +208,11 @@ class HdStreamer:
             if not self.__header_valid:
                 self.__process_stream_header(data)
                 self.__header_valid = True
-                len_bytes -= self.__header_size
+                # HD has a 4 byte header, HD Plus is dynamic and fills the first block returned
+                if (self.__header_size > 0):
+                    len_bytes -= self.__header_size
+                else:
+                    len_bytes -= len_bytes
 
                 # If we're done after the header bytes, continue and skip processing
                 if len_bytes == 0:
@@ -290,7 +306,7 @@ class HdStreamer:
             self.__file_stream.write("Total power uW")
         self.__file_stream.write("\r")
 
-    # Processes each packet comming in
+    # Processes each packet coming in
     def __process_packet(self, data):
         # If header is not valid, assume this is the stream header and process it
         if (self.__header_valid == False):
@@ -354,15 +370,54 @@ class HdStreamer:
         # Processing for stream header
 
     def __process_stream_header(self, data):
-        self.__stream_header_version = data[0]
-        # Future code may need header size to change based on version here
-        # data[1] is a reserved padding byte
-        self.__stream_header_channels = data[2]
-        self.__stream_average_rate = data[3]
+        buffer_index = 0
+        string_size = 0
+        group_count = 0
+        # HD plus header is a more complex format
+        if (self.__isHdPlus):
+            self.__stream_header_version = data[buffer_index]
+            buffer_index += 2
+            if (self.__stream_header_version == 1):
+                raise Exception ("HD plus decode requires a later header version")
+            elif (self.__stream_header_version == 2):
+                # Jump to string table size
+                buffer_index += 6
+                string_size = data[buffer_index]
+                buffer_index += 1
+                string_size += data[buffer_index] * 256
+                buffer_index += 1
+                # Jump to group count
+                group_count = data[buffer_index]
+                buffer_index += 2
+                if (group_count > 1):
+                    raise Exception ("More than one hardware stream group is not supported!")
+                # Get the channel count word
+                channel_count = data[buffer_index]
+                buffer_index += 1
+                channel_count += data[buffer_index] * 256
+                if (channel_count != 4):
+                    raise Exception ("PPM Plus Decode only currently supported with all channels enabled!")
+                buffer_index += 6
+                # Store the averaging rate
+                self.__stream_average_rate = data[buffer_index]
+                # Mark all channels enabled
+                self.__stream_header_channels = 0x0F
+            else:
+                raise Exception("HD plus decode does not support header version above 2")
+
+
+        # Original HD header is a small number of bytes indicating the channels and averaging rate
+        else:
+            self.__stream_header_version = data[0]
+            # Future code may need header size to change based on version here
+            # data[1] is a reserved padding byte
+            self.__stream_header_channels = data[2]
+            self.__stream_average_rate = data[3]
+
         # Calculate the initial stream state given the available channels
         self.__init_stream_state(self.__stream_header_channels & 0x0F)
 
-        # Prepate the output file for real time write if required
+        # Prepare the output file for real time write if required
         if (self.__file_stream is None and self.__save_mode == "real_time"):
             logging.debug(datetime.now().isoformat() + "\t: Opened CSV for real-time processing")
             self.__prepare_csv_file(self.__csv_file_path)
@@ -407,7 +462,7 @@ class HdStreamer:
         self.__real_time_thread_running = True
 
         buffer_needed = 1500
-        process_size = 1000
+        process_size = 512      # HD plus requirement, decide in stream blocks
 
         logging.debug(datetime.now().isoformat() + "\t: Real-time save worker: Started")
 
@@ -436,30 +491,248 @@ class HdStreamer:
         self.__real_time_thread_running = False
 
     # Decodes a buffer of streaming data measurements.  The header and and additional transport bytes must have been
-    # removed by this point, leaving only pure measurement data.  The decode uses a state machine, initialised by the
+    # removed by this point, leaving only pure measurement data.  The decode uses a state machine (PPM), initialised by the
     # header bytes at the start of streaming.  Multiple calls can be made provided sequential buffers of valid data
-    # are given.
+    # are given.  HD PPM Plus decode path splits here
     def __decode_stream_data_buffer(self, buffer):
         i = 0
         buffer_len = len(buffer)
 
         # Note: Fixed HD 4uS per stripe base measurement rate
-        ave_multiplier = (pow(self.__stream_average_rate,2) * 4)   
+        ave_multiplier = (pow(self.__stream_average_rate, 2) * 4)
         if (ave_multiplier == 0):
             ave_multiplier = 4
+        
+        # HD Plus format requires alternate processing, as the format is different
+        if (self.__isHdPlus == True):            
+            self.__decode_hdplus_stream_data_buffer(buffer, ave_multiplier)
+        else:
+            while i < buffer_len:
+                to_buffer = False
+                i, to_buffer = self._process_stream_decode_state(buffer, i, to_buffer)
 
-        while i < buffer_len:
-            to_buffer = False
-            i, to_buffer = self._process_stream_decode_state(buffer, i, to_buffer)
+                if not self.__flag_word_low:
+                    self.__stream_decode_prev_state = self.__stream_decode_state
+                    self.__stream_decode_state = self.__get_next_decode_state(self.__stream_decode_state)
 
-            if not self.__flag_word_low:
-                self.__stream_decode_prev_state = self.__stream_decode_state
-                self.__stream_decode_state = self.__get_next_decode_state(self.__stream_decode_state)
+                # If meas ready to be output
+                if to_buffer:
+                    if self.__stream_decode_state <= self.__stream_decode_prev_state:
+                        self._calculate_time_and_power_values(ave_multiplier)
+                    
+    # HD Plus decode section, intended to take 1 512 byte block at a time but other sizes should work provided
+    # the data is packed with no additional bytes
+    def __decode_hdplus_stream_data_buffer(self, buffer, ave_multiplier):
+        buffer_len = len(buffer)
+        access_byte = 0
+        repeat_count = 0
+        packet_id = 0
+        self.__value_5v = 0
+        self.__value_5i = 0
+        self.__value_12v = 0
+        self.__value_12i = 0
+        LastValue = False
+        temp_decode = 0
+        file_string = ""
+        
+        # Iterate and process out stripes, we have to decode the packet types
+        # in full to do this here!
+        while (access_byte < buffer_len):
+            
+            # Switch on the packet ID
+            packet_id = buffer[access_byte^1]
+            
+            # Absolute packet
+            if (packet_id == 4):
+                access_byte += 2
+                
+                # 15 bit signed voltage
+                self.__value_5v = buffer[access_byte ^ 1]
+                self.__value_5v = self.__value_5v << 8
+                access_byte += 1
+                self.__value_5v += buffer[access_byte ^ 1]
+                self.__value_5v = self.__value_5v >> 1
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_5v & 0x4000) != 0:
+                    self.__value_5v = self.__value_5v - 0x8000
 
-            # If meas ready to be output
-            if to_buffer:
-                if self.__stream_decode_state <= self.__stream_decode_prev_state:
-                    self._calculate_time_and_power_values(ave_multiplier)
+                # 25 bit signed current (starting bottom bit of last byte)
+                self.__value_5i = buffer[access_byte ^ 1]
+                self.__value_5i = self.__value_5i & 0x01
+                self.__value_5i = self.__value_5i << 8
+                access_byte += 1
+                self.__value_5i += buffer[access_byte ^ 1]
+                self.__value_5i = self.__value_5i << 8
+                access_byte += 1
+                self.__value_5i += buffer[access_byte ^ 1]
+                self.__value_5i = self.__value_5i << 8
+                access_byte += 1
+                self.__value_5i += buffer[access_byte ^ 1]
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_5i & 0x1000000) != 0:
+                    self.__value_5i = self.__value_5i - 0x2000000
+
+                # 15 bit signed voltage
+                access_byte += 1
+                self.__value_12v = buffer[access_byte ^ 1]
+                self.__value_12v = self.__value_12v << 8
+                access_byte += 1
+                self.__value_12v += buffer[access_byte ^ 1]
+                self.__value_12v = self.__value_12v >> 1
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_12v & 0x4000) != 0:
+                    self.__value_12v = self.__value_12v - 0x8000
+
+                # 25 bit signed current (starting bottom bit of last byte)
+                self.__value_12i = buffer[access_byte ^ 1]
+                self.__value_12i = self.__value_12i & 0x01
+                self.__value_12i = self.__value_12i << 8
+                access_byte += 1
+                self.__value_12i += buffer[access_byte ^ 1]
+                self.__value_12i = self.__value_12i << 8
+                access_byte += 1
+                self.__value_12i += buffer[access_byte ^ 1]
+                self.__value_12i = self.__value_12i << 8
+                access_byte += 1
+                self.__value_12i += buffer[access_byte ^ 1]
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_12i & 0x1000000) != 0:
+                    self.__value_12i = self.__value_12i - 0x2000000
+
+                # Copy current values to last and flag we have a value set of last values
+                # This is needed for repeats and deltas later
+                self.__Last5V_V = self.__value_5v
+                self.__Last5V_I = self.__value_5i
+                self.__Last12V_V = self.__value_12v
+                self.__Last12V_I = self.__value_12i
+                __LastValid = True
+                # Flag one value to process
+                repeat_count = 1
+
+                # Advance to next byte at end
+                access_byte+=1
+            
+            # Blank packet - skip over
+            elif (packet_id == 8):
+                # Skip the number of bytes specified in the packet
+                access_byte+=1
+                access_byte += buffer[access_byte^1] + 1
+                repeat_count = 0
+            
+            # Trigger packet - skip over
+            elif (packet_id == 10):
+                # Skip the fixed size packet
+                access_byte += 2
+                repeat_count = 0
+
+            # Delta data packet
+            elif (packet_id == 12):
+
+                # Get length byte
+                access_byte += 2
+                temp_decode = buffer[access_byte ^ 1]
+                temp_decode &= 0xF0
+                temp_decode = temp_decode >> 4
+                if temp_decode != 10:
+                    # Halt/error on unexpected data length
+                    raise Exception ("Invalid length for delta paket!")
+
+                # Decode 5v volt, 10 bits long starting lower nibble of first byte
+                self.__value_5v = buffer[access_byte ^ 1]
+                self.__value_5v = self.__value_5v & 0x0F
+                self.__value_5v = self.__value_5v << 6
+                access_byte += 1
+                temp_decode = buffer[access_byte ^ 1]
+                temp_decode = temp_decode >> 2
+                self.__value_5v += temp_decode
+
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_5v & 0x0200) != 0:
+                    self.__value_5v = self.__value_5v - 0x0400
+
+                # Decode 5v current, 10 bits long starting lower 2 bits of current byte
+                self.__value_5i = buffer[access_byte ^ 1]
+                self.__value_5i = self.__value_5i & 0x03
+                self.__value_5i = self.__value_5i << 8
+                access_byte += 1
+                self.__value_5i += buffer[access_byte ^ 1]
+
+                if (self.__value_5i & 0x0200) != 0:
+                    self.__value_5i = self.__value_5i - 0x0400
+
+                # Decode 12v volt, 10 bits long starting on a full byte
+                access_byte += 1
+                self.__value_12v = buffer[access_byte ^ 1]
+                self.__value_12v = self.__value_12v << 2
+                access_byte += 1
+                temp_decode = buffer[access_byte ^ 1]
+                temp_decode = temp_decode >> 6
+                temp_decode &= 0x03
+                self.__value_12v += temp_decode
+
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_12v & 0x0200) != 0:
+                    self.__value_12v = self.__value_12v - 0x0400
+
+                # Decode 12v current, 10 bits long starting lower 6 bits of current byte
+                self.__value_12i = buffer[access_byte ^ 1]
+                self.__value_12i &= 0x3F
+                self.__value_12i = self.__value_12i << 2
+                access_byte += 1
+                temp_decode = buffer[access_byte ^ 1]
+                temp_decode = temp_decode >> 4
+                temp_decode &= 0x0F
+                self.__value_12i += temp_decode
+
+                # Handle negative numbers (hard-coded to PPM for speed)
+                if (self.__value_12i & 0x0200) != 0:
+                    self.__value_12i = self.__value_12i - 0x0400
+
+                # Skip if to absolute data yet
+                if self.__LastValid:
+                    # New value is current plus last, then store the updated last value
+                    self.__value_5v += self.__Last5V_V
+                    self.__Last5V_V = self.__value_5v
+                    self.__value_5i += self.__Last5V_I
+                    self.__Last5V_I = self.__value_5i
+                    self.__value_12v += self.__Last12V_V
+                    self.__Last12V_V = self.__value_12v
+                    self.__value_12i += self.__Last12V_I
+                    self.__Last12V_I = self.__value_12i
+                    repeat_count = 1
+                else:
+                    repeat_count = 0
+
+                # Advance to next byte at end
+                access_byte+=1
+
+            # Repeat data packet
+            elif (packet_id == 14):
+                # Skip over group count
+                access_byte += 2
+                # Store the repeat count as the number of last values to repeat
+                repeat_count = buffer[access_byte^1]
+                access_byte+=1
+
+                # Can't process if no absolute data yet
+                if (self.__LastValid == False):
+                    repeat_count = 0
+            # Case for bad packet ID
+            else:
+                raise Exception ("Invalid packet ID in stream, data is corrupt: " . packet_id)
+            
+            # Process if data is ready
+            if (repeat_count > 0):
+                # Calculate time and power values
+                value_5p = (self.__value_5v * self.__value_5i) / 1000
+                value_12p = (self.__value_12v * self.__value_12i) / 1000
+                value_totp = value_5p + value_12p
+
+                # Write the line(s) to file
+                for x in range (repeat_count):
+                    file_string = str(self.stream_time_pos) + "," + str(self.__value_5v) + "," + str(self.__value_5i) + "," + str(self.__value_12v) + "," + str(self.__value_12i) + "," + str(value_5p) + "," + str(value_12p) + "," + str(value_totp) + "\r"
+                    self.__file_stream.write(file_string)
+                    self.stream_time_pos = self.stream_time_pos + ave_multiplier
 
     def _process_stream_decode_state(self, buffer, i, to_buffer):
         if self.__stream_decode_state == 0:
