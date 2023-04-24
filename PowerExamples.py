@@ -37,7 +37,7 @@ Main function, containing the example code to execute
 def main():
 
     # Enable logging
-    logging.basicConfig (filename="app.log", filemode='w', level=logging.DEBUG)
+    logging.basicConfig (filename="app.log", filemode='w', level=logging.DEBUG, format='%(asctime)s %(levelname)-8s %(message)s')
     logger = logging.getLogger(__name__)
 
     # Required min version for this application note
@@ -88,6 +88,12 @@ def main():
         print ("Failed to set hardware averaging: " + msg)
     else:
         print ("Averaging: " + myPpmDevice.sendCommand ("record:averaging?"))
+        
+        
+    # TODO: temp removal for testing
+    msg = myPpmDevice.sendCommand("conf stream comp off")
+    if (msg != "OK"):
+        print ("Failed to set compression off: " + msg)
 
     ######################################################
     # Here we set the output paths and begin streaming
@@ -103,7 +109,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (60*1, outputPath, logger) #save_mode="real_time"
+    MyStream.start_stream (5, outputPath, logger, save_mode="real_time") #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")
