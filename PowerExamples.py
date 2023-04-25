@@ -109,7 +109,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (5, outputPath, logger, save_mode="real_time") #save_mode="real_time"
+    MyStream.start_stream (10, outputPath, logger, save_mode="real_time") #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")

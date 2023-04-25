@@ -5,7 +5,7 @@ import threading
 import time
 from datetime import datetime
 from timeit import default_timer as timer
-
+import struct
 
 class HdStreamer:
     def __init__(self, quarch_device):
@@ -33,8 +33,7 @@ class HdStreamer:
         self.__csv_file_path = None
         # Members used to buffer and then write to file during the CSV creating process
         self.__write_buffer = ""
-        self.__file_stream = None
-        self.__debug_file_stream = None
+        self.__file_stream = None        
         # Decode flags to persist across buffers to track cases where words are split
         self.__flag_word_low = False
         self.__val_word_high = 0
@@ -60,6 +59,10 @@ class HdStreamer:
         self.__Last12V_V = 0
         self.__Last12V_I = 0
         self.__logger = None
+        # Members used for debug logging to .dat file during implementation testing
+        self.__debug_file_stream = None
+        self.__debug_time_structure = bytearray(8)
+        self.__debug_bad_packets = 0
 
         # State machine setup for the streaming decode.  Provides the state transitions needed for any given channel selection
         # Channel selection is commented in the right. -1 means disabled channel.
@@ -123,10 +126,12 @@ class HdStreamer:
         self.__logger = logger
         self.__debug_data_dump = debug_data_dump
 
-        # Open debug raw dump if requested
+        # Open debug raw dump file if requested
         if (self.__debug_data_dump == True):
             self.__debug_file_stream = open(csv_file_path + ".dat", 'wb')
-
+            # Write the fixed header bytes required            
+            self.__debug_file_stream.write(bytearray(b'\x00\x02'))
+            
         # Work out how many bytes will be in a stripe, based on channel enables
         bytes_per_stripe = self._get_bytes_per_stripe()
 
@@ -215,9 +220,20 @@ class HdStreamer:
                 break
             data, len_bytes = self._send_and_receive_data(data, data_buffer_len, len_data)
 
+            # If packet capture debug is enabled, process it here
+            if (self.__debug_file_stream is not None):
+                # Write the 8 byte time in nS since the last packet.  Unused for now, so set to 0
+                self.__debug_file_stream.write(self.__debug_time_structure)
+                # Write the 4 byte Int32 form packet length
+                byte_string = struct.pack(">I", len_bytes)
+                self.__debug_file_stream.write(byte_string)
+                # Finally the data block is written
+                self.__debug_file_stream.write(data[:len_bytes])
+
             # If header is not valid, assume this is the stream header and process it (one time operation at start)
             if not self.__header_valid:
-                self.__process_stream_header(data)
+                # Ensure we pass only the valid data to the processing function as the buffer can be sized larger
+                self.__process_stream_header(data, len_bytes)
                 self.__header_valid = True
                 # HD has a 4 byte header, HD Plus is dynamic and fills the first block returned
                 if (self.__header_size > 0):
@@ -319,10 +335,10 @@ class HdStreamer:
         self.__file_stream.write("\r")
 
     # Processes each packet coming in
-    def __process_packet(self, data):
+    def __process_packet(self, data, data_len):
         # If header is not valid, assume this is the stream header and process it
         if (self.__header_valid == False):
-            self.__process_stream_header(data)
+            self.__process_stream_header(data, data_len)
             self.__header_valid = True
 
             # process remainder as regular stream data
@@ -335,6 +351,7 @@ class HdStreamer:
 
     # Handles the status byte and sets actions based on it
     def __handle_status_byte(self, status_byte):
+
         # Termination request on 0-2
         if (status_byte >= 0 and status_byte < 3):
             self.__stream_end_status = status_byte
@@ -384,15 +401,14 @@ class HdStreamer:
 
         # Processing for stream header
 
-    def __process_stream_header(self, data):
+    def __process_stream_header(self, data, len_bytes):
         buffer_index = 0
         string_size = 0
         group_count = 0
         # HD plus header is a more complex format
         if (self.__isHdPlus):
-            if (self.__debug_file_stream is not None):
-                self.__debug_file_stream.write(data)
             self.__logger.info(datetime.now().isoformat() + "\t: HD PPM Plus header found")
+            self.__logger.info(datetime.now().isoformat() + "\t: header length: " + str(len_bytes))
             self.__stream_header_version = data[buffer_index]
             buffer_index += 2
             if (self.__stream_header_version == 1):
@@ -551,14 +567,10 @@ class HdStreamer:
         self.__value_5i = 0
         self.__value_12v = 0
         self.__value_12i = 0
-        LastValue = False
         temp_decode = 0
         file_string = ""
 
         logging.debug(datetime.now().isoformat() + "\t: buffer length: " + str(buffer_len))
-        
-        if (self.__debug_file_stream is not None):
-            self.__debug_file_stream.write(buffer)
         
         # Iterate and process out stripes, we have to decode the packet types
         # in full to do this here!
@@ -744,16 +756,25 @@ class HdStreamer:
                     repeat_count = 0
             # Case for bad packet ID
             else:
+                # Log error to the file
                 logging.info(datetime.now().isoformat() + "\t: Corrupt stream: ID=" + str(packet_id))
                 logging.info(datetime.now().isoformat() + "\t: Corrupt stream: Access Pos=" + str(access_byte))
                 logging.info(datetime.now().isoformat() + "\t: Corrupt stream: Length=" + str(buffer_len))
+                # Log the bad block to the console
                 for i in range(0, len(buffer), 16):
                     row = buffer[i:i+16]
                     swapped_row = bytes(reversed(row))
                     hex_row = ' '.join([f"{byte:02x}" for byte in swapped_row])
                     print(hex_row)
-                raise Exception ("Invalid packet ID in stream, data is corrupt: " + str(packet_id))
-            
+
+                # Fail after 3 bad packets to simplify debug
+                if (self.__debug_bad_packets > 3):
+                    # CLose the debug file to make sure we do not lose final data before raising an exception
+                    if (self.__debug_file_stream is not None):
+                        self.__debug_file_stream.close()
+                    raise Exception ("Invalid packet ID in stream, data is corrupt: " + str(packet_id))
+                else:
+                    self.__debug_bad_packets += 1
             # Process if data is ready
             if (repeat_count > 0):
                 # Calculate time and power values
