@@ -94,6 +94,10 @@ def main():
     msg = myPpmDevice.sendCommand("conf stream comp off")
     if (msg != "OK"):
         print ("Failed to set compression off: " + msg)
+    # Set to demo mode
+    msg = myPpmDevice.sendCommand("write 0xA005 0x0001")   
+    if (msg != "OK"):
+        print ("Failed to set demo mode on: " + msg)    
 
     ######################################################
     # Here we set the output paths and begin streaming
@@ -109,7 +113,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (10, outputPath, logger, save_mode="real_time") #save_mode="real_time"
+    MyStream.start_stream (6, outputPath, logger, save_mode="real_time") #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")
