@@ -119,7 +119,7 @@ class HdStreamer:
         }
         return average_rates
 
-    def start_stream(self, seconds, csv_file_path, logger, fio_command=None, save_mode="post_process", debug_data_dump=True):
+    def start_stream(self, seconds, csv_file_path, logger, fio_command=None, save_mode="post_process", debug_data_dump=False):
 
         self.__save_mode = save_mode
         self.__csv_file_path = csv_file_path
@@ -214,7 +214,9 @@ class HdStreamer:
         stream_start = timer()
         while self.__stream_end_status == -1:
             # Read packet size first
-            self.__stream_socket.recv_into(memoryview(len_data), 2)
+            got_bytes = self.__stream_socket.recv_into(memoryview(len_data), 2)
+            if (got_bytes != 2):
+                raise Exception ("Unable to read data block length")
 
             if not len_data:
                 break
@@ -270,14 +272,24 @@ class HdStreamer:
 
             # End after set time
 
+    # Handles the receipt of a single 'block' of data.   2 bytes are passed in from the previous read, to
+    # tell us how big the block is.  Outside of a timeout, we cannot leave here until the full block is read
+    # as otherwise we would be out of step for the next block
     def _send_and_receive_data(self, data, data_buffer_len, len_data):
+        read_bytes = 0
         len_bytes = int(len_data[0] + (len_data[1] << 8))
+
         # If the current buffer is not large enough, re-allocate with a bit of headroom
         if len_bytes > data_buffer_len:
             data = bytearray(len_bytes + 10)
-        # Receive from the socket into the end of the current data
-        self.__stream_socket.recv_into(memoryview(data), len_bytes)
-        # Force an TCP ACK by sending a stub packet, used to speed up the data flow
+
+        # Loop until the entire stream block is read
+        while (read_bytes < len_bytes):
+            # Receive from the socket into the end of the current data
+            received = self.__stream_socket.recv_into(memoryview(data)[read_bytes:], (len_bytes - read_bytes))
+            read_bytes += received               
+        
+        # Force an TCP ACK by sending a stub packet, used to speed up the data flow on devices with low TCP RAM
         self.__stream_socket.send(bytearray(b'\x02\x00\xff\xff'))
         return data, len_bytes
 
@@ -536,8 +548,7 @@ class HdStreamer:
         # Note: Fixed HD 4uS per stripe base measurement rate
         ave_multiplier = (pow(self.__stream_average_rate, 2) * 4)
         if (ave_multiplier == 0):
-            ave_multiplier = 4
-        logging.debug(datetime.now().isoformat() + "\t: Averaging rate: " + str(ave_multiplier))
+            ave_multiplier = 4        
         
         # HD Plus format requires alternate processing, as the format is different
         if (self.__isHdPlus == True):            
@@ -568,9 +579,7 @@ class HdStreamer:
         self.__value_12v = 0
         self.__value_12i = 0
         temp_decode = 0
-        file_string = ""
-
-        logging.debug(datetime.now().isoformat() + "\t: buffer length: " + str(buffer_len))
+        file_string = ""        
         
         # Iterate and process out stripes, we have to decode the packet types
         # in full to do this here!
@@ -642,7 +651,7 @@ class HdStreamer:
                 self.__Last5V_I = self.__value_5i
                 self.__Last12V_V = self.__value_12v
                 self.__Last12V_I = self.__value_12i
-                __LastValid = True
+                self.__LastValid = True
                 # Flag one value to process
                 repeat_count = 1
 

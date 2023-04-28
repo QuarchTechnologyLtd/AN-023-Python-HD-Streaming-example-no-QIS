@@ -83,21 +83,12 @@ def main():
     if (msg != "OK"):
         print ("Failed to set trigger mode: " + msg)
     # Set the averaging rate to the module to 16 (64uS) as the closest to 100uS
-    msg = myPpmDevice.sendCommand ("record:averaging 4")   
+    msg = myPpmDevice.sendCommand ("record:averaging 16")   
     if (msg != "OK"):
         print ("Failed to set hardware averaging: " + msg)
     else:
         print ("Averaging: " + myPpmDevice.sendCommand ("record:averaging?"))
-        
-        
-    # TODO: temp removal for testing
-    msg = myPpmDevice.sendCommand("conf stream comp off")
-    if (msg != "OK"):
-        print ("Failed to set compression off: " + msg)
-    # Set to demo mode
-    msg = myPpmDevice.sendCommand("write 0xA005 0x0001")   
-    if (msg != "OK"):
-        print ("Failed to set demo mode on: " + msg)    
+                  
 
     ######################################################
     # Here we set the output paths and begin streaming
@@ -113,7 +104,7 @@ def main():
     outputPath100 = streamPath + "\\" + fileName100
     # Use the streamer class to stream for a set period of time, outputing to CSV
     MyStream = HdStreamer(myPpmDevice)
-    MyStream.start_stream (6, outputPath, logger, save_mode="real_time") #save_mode="real_time"
+    MyStream.start_stream (6, outputPath, logger) #save_mode="real_time"
     
     # Close connection to the module now we're done with it.
     print ("-Closing module")
