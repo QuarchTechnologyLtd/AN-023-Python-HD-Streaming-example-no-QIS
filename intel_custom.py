@@ -411,8 +411,7 @@ class HdStreamer:
                 print ("Stopping stream, recording time is complete")
         self.__stream_socket.send(bytearray(b'\x02\x00\xff\x01'))
 
-        # Processing for stream header
-
+    # Processing for stream header
     def __process_stream_header(self, data, len_bytes):
         buffer_index = 0
         string_size = 0
